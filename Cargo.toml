@@ -1,0 +1,12 @@
+[package]
+name = "epub-dude"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+simple_logger = "5.0"
+log = "0.4"
+anyhow = "1.0"
+ureq = "2.12"
+html5ever = "0.29"
+epub-builder = "0.7"
