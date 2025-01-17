@@ -115,13 +115,21 @@ impl TokenSink for LinksSink {
                     }
                     _ => {}
                 },
-                TagKind::EndTag => match (self.found_author.get(), self.found_title.get()) {
-                    (true, false) => {
+                TagKind::EndTag => match (
+                    self.found_author.get(),
+                    self.found_title.get(),
+                    self.found_links.get(),
+                ) {
+                    (true, false, false) => {
                         self.found_author.set(false);
                         self.found_author_tag.set(false);
                     }
-                    (false, true) => self.found_title.set(false),
-                    (_, _) => {}
+                    (false, true, false) => self.found_title.set(false),
+                    (false, false, true) => match tag.name.as_ref() {
+                        "ul" => self.found_links.set(false),
+                        _ => {}
+                    },
+                    (_, _, _) => {}
                 },
             },
             Token::CharacterTokens(text) => {
@@ -142,7 +150,7 @@ impl TokenSink for LinksSink {
 }
 
 fn main() {
-    simple_logger::init_with_level(log::Level::Error).expect("simple logger init failed");
+    simple_logger::init_with_level(log::Level::Info).expect("simple logger init failed");
 
     let args: Vec<String> = env::args().collect();
 
@@ -161,6 +169,7 @@ fn main() {
     let links = info.links.into_inner();
 
     for i in 0..links.len() {
+        log::info!("{}", &links[i]);
         let content = process_chapter(&agent, &links[i]).expect("process_chapter failed");
         let title = content.title.into_inner();
 
@@ -169,11 +178,11 @@ fn main() {
                 format!("{}.xhtml", i),
                 Cursor::new(format!(
                     r#"<?xml version="1.0" encoding="UTF-8"?>
-    <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
-    <body>
-    {}
-    </body>
-    </html>"#,
+        <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+        <body>
+        {}
+        </body>
+        </html>"#,
                     content.text.into_inner()
                 )),
             )
@@ -183,7 +192,7 @@ fn main() {
         )
         .expect("create chapter failed");
 
-        thread::sleep(time::Duration::from_secs(3));
+        thread::sleep(time::Duration::from_millis(900));
     }
 
     book.inline_toc();
