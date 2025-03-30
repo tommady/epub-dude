@@ -15,7 +15,7 @@ use html5ever::{
         BufferQueue, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
     },
 };
-use ureq::Agent;
+use ureq::{Agent, BodyReader};
 
 trait SinkType: Default {}
 impl SinkType for LinksSink {}
@@ -197,8 +197,6 @@ fn main() {
             .child(TocElement::new(format!("{i}.xhtml#1"), title)),
         )
         .expect("create chapter failed");
-
-        thread::sleep(time::Duration::from_millis(900));
     }
 
     book.inline_toc();
@@ -209,10 +207,10 @@ fn main() {
 }
 
 fn process<T: SinkType + TokenSink>(agent: &Agent, path: &str) -> Result<T> {
-    let resp = agent.get(path).call()?;
+    let mut resp = fetch_with_backoff(agent, path)?;
     let mut chunk = ByteTendril::new();
 
-    resp.into_body().into_reader().read_to_tendril(&mut chunk)?;
+    resp.read_to_tendril(&mut chunk)?;
 
     let input = BufferQueue::default();
     input.push_back(
@@ -227,4 +225,27 @@ fn process<T: SinkType + TokenSink>(agent: &Agent, path: &str) -> Result<T> {
     tok.end();
 
     Ok(tok.sink)
+}
+
+fn fetch_with_backoff(agent: &Agent, path: &str) -> Result<BodyReader<'static>> {
+    let mut retries = 3;
+    let mut delay = time::Duration::from_millis(3000);
+
+    while retries > 0 {
+        match agent.get(path).call() {
+            Ok(resp) => {
+                thread::sleep(time::Duration::from_millis(900));
+                return Ok(resp.into_body().into_reader());
+            }
+            Err(ureq::Error::StatusCode(429)) => {
+                log::info!("received 429, retrying in {delay:?}");
+                thread::sleep(delay);
+                delay *= 2;
+                retries -= 1;
+            }
+            Err(e) => return Err(anyhow::anyhow!(e)),
+        }
+    }
+
+    Err(anyhow::anyhow!("max retries exceeded"))
 }
