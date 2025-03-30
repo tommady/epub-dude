@@ -10,8 +10,8 @@ simple_logger = "5.0"
 log = "0.4"
 anyhow = "1.0"
 ureq = "3.0"
-html5ever = "0.29"
-epub-builder = "0.7"
+html5ever = "0.30"
+epub-builder = "0.8"
 
 [profile.release]
 opt-level = 's'
