@@ -155,9 +155,7 @@ fn main() {
     simple_logger::init_with_level(log::Level::Info).expect("simple logger init failed");
 
     let args: Vec<String> = env::args().collect();
-
-    let agent = ureq::AgentBuilder::new().https_only(true).build();
-
+    let agent = Agent::new_with_defaults();
     let mut book = EpubBuilder::new(ZipCommand::new().expect("new zip command failed"))
         .expect("new epub builder failed");
 
@@ -171,7 +169,8 @@ fn main() {
     let links = info.links.into_inner();
 
     for (i, item) in links.iter().enumerate() {
-        log::info!("{}", &links[i]);
+        log::info!("{item}");
+
         let content = process_chapter(&agent, item).expect("process_chapter failed");
         let title = content.title.into_inner();
 
@@ -208,7 +207,7 @@ fn process_info(agent: &Agent, path: &str) -> Result<LinksSink> {
     let resp = agent.get(path).call()?;
     let mut chunk = ByteTendril::new();
 
-    resp.into_reader().read_to_tendril(&mut chunk)?;
+    resp.into_body().into_reader().read_to_tendril(&mut chunk)?;
 
     let input = BufferQueue::default();
     input.push_back(
@@ -229,7 +228,7 @@ fn process_chapter(agent: &Agent, path: &str) -> Result<ChapterSink> {
     let resp = agent.get(path).call()?;
     let mut chunk = ByteTendril::new();
 
-    resp.into_reader().read_to_tendril(&mut chunk)?;
+    resp.into_body().into_reader().read_to_tendril(&mut chunk)?;
 
     let input = BufferQueue::default();
     input.push_back(

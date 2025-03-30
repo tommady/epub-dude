@@ -9,7 +9,7 @@ edition = "2021"
 simple_logger = "5.0"
 log = "0.4"
 anyhow = "1.0"
-ureq = "2.12"
+ureq = "3.0"
 html5ever = "0.29"
 epub-builder = "0.7"
 
