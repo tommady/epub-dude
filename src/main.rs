@@ -17,6 +17,10 @@ use html5ever::{
 };
 use ureq::Agent;
 
+trait SinkType: Default {}
+impl SinkType for LinksSink {}
+impl SinkType for ChapterSink {}
+
 #[derive(Default)]
 struct ChapterSink {
     found_name: Cell<bool>,
@@ -161,7 +165,7 @@ fn main() {
 
     book.epub_version(EpubVersion::V30);
 
-    let info = process_info(&agent, &args[1]).expect("process_info failed");
+    let info: LinksSink = process::<LinksSink>(&agent, &args[1]).expect("process_info failed");
 
     book.add_author(info.author.into_inner());
     let title = info.title.into_inner();
@@ -171,7 +175,8 @@ fn main() {
     for (i, item) in links.iter().enumerate() {
         log::info!("{item}");
 
-        let content = process_chapter(&agent, item).expect("process_chapter failed");
+        let content: ChapterSink =
+            process::<ChapterSink>(&agent, item).expect("process_chapter failed");
         let title = content.title.into_inner();
 
         book.add_content(
@@ -203,7 +208,7 @@ fn main() {
         .expect("epub generate failed");
 }
 
-fn process_info(agent: &Agent, path: &str) -> Result<LinksSink> {
+fn process<T: SinkType + TokenSink>(agent: &Agent, path: &str) -> Result<T> {
     let resp = agent.get(path).call()?;
     let mut chunk = ByteTendril::new();
 
@@ -216,28 +221,7 @@ fn process_info(agent: &Agent, path: &str) -> Result<LinksSink> {
             .map_err(|e| anyhow::Error::msg(format!("try_reinterpret failed on:{e:?}")))?,
     );
 
-    let sinker = LinksSink::default();
-    let tok = Tokenizer::new(sinker, TokenizerOpts::default());
-    let _ = tok.feed(&input);
-    tok.end();
-
-    Ok(tok.sink)
-}
-
-fn process_chapter(agent: &Agent, path: &str) -> Result<ChapterSink> {
-    let resp = agent.get(path).call()?;
-    let mut chunk = ByteTendril::new();
-
-    resp.into_body().into_reader().read_to_tendril(&mut chunk)?;
-
-    let input = BufferQueue::default();
-    input.push_back(
-        chunk
-            .try_reinterpret()
-            .map_err(|e| anyhow::Error::msg(format!("try_reinterpret failed on:{e:?}")))?,
-    );
-
-    let sinker = ChapterSink::default();
+    let sinker = T::default();
     let tok = Tokenizer::new(sinker, TokenizerOpts::default());
     let _ = tok.feed(&input);
     tok.end();
