@@ -10,8 +10,10 @@ use std::{
 use anyhow::Result;
 use epub_builder::{EpubBuilder, EpubContent, EpubVersion, ReferenceType, TocElement, ZipCommand};
 use html5ever::{
-    tendril::*,
-    tokenizer::{BufferQueue, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer},
+    tendril::{ByteTendril, ReadExt},
+    tokenizer::{
+        BufferQueue, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
+    },
 };
 use ureq::Agent;
 
@@ -30,7 +32,7 @@ impl TokenSink for ChapterSink {
         match token {
             Token::TagToken(tag) => match tag.kind {
                 TagKind::StartTag => {
-                    for attr in tag.attrs.iter() {
+                    for attr in &tag.attrs {
                         match (attr.name.local.as_ref(), attr.value.as_ref()) {
                             ("class", "name") => self.found_name.set(true),
                             ("class", "content") => self.found_content.set(true),
@@ -46,12 +48,12 @@ impl TokenSink for ChapterSink {
             },
             Token::CharacterTokens(text) => {
                 match (self.found_name.get(), self.found_content.get()) {
-                    (true, false) => self.title.borrow_mut().push_str(&text.to_string()),
+                    (true, false) => self.title.borrow_mut().push_str(text.as_ref()),
                     (false, true) => {
                         if text.is_empty() {
                             return TokenSinkResult::Continue;
                         }
-                        let trimmed = text.replace("\n", "<br />").replace("\u{2003}", "");
+                        let trimmed = text.replace('\n', "<br />").replace("\u{2003}", "");
                         self.text.borrow_mut().push_str(&trimmed.to_string());
                     }
                     (_, _) => {}
@@ -82,7 +84,7 @@ impl TokenSink for LinksSink {
             Token::TagToken(tag) => match tag.kind {
                 TagKind::StartTag => match tag.name.as_ref() {
                     "span" => {
-                        for attr in tag.attrs.iter() {
+                        for attr in &tag.attrs {
                             match (attr.name.local.as_ref(), attr.value.as_ref()) {
                                 ("class", "author") => self.found_author_tag.set(true),
                                 ("class", "title") => self.found_title.set(true),
@@ -93,23 +95,22 @@ impl TokenSink for LinksSink {
                     "a" => match (self.found_author_tag.get(), self.found_links.get()) {
                         (true, false) => self.found_author.set(true),
                         (false, true) => {
-                            for attr in tag.attrs.iter() {
-                                match attr.name.local.as_ref() {
-                                    "href" => self
-                                        .links
+                            for attr in &tag.attrs {
+                                if attr.name.local.as_ref() == "href" {
+                                    self.links
                                         .borrow_mut()
-                                        .push(format!("https:{}", attr.value.as_ref())),
-                                    _ => {}
+                                        .push(format!("https:{}", attr.value.as_ref()));
                                 }
                             }
                         }
                         (_, _) => {}
                     },
                     "ul" => {
-                        for attr in tag.attrs.iter() {
-                            match (attr.name.local.as_ref(), attr.value.as_ref()) {
-                                ("id", "chapter-list") => self.found_links.set(true),
-                                (_, _) => {}
+                        for attr in &tag.attrs {
+                            if let ("id", "chapter-list") =
+                                (attr.name.local.as_ref(), attr.value.as_ref())
+                            {
+                                self.found_links.set(true);
                             }
                         }
                     }
@@ -125,10 +126,11 @@ impl TokenSink for LinksSink {
                         self.found_author_tag.set(false);
                     }
                     (false, true, false) => self.found_title.set(false),
-                    (false, false, true) => match tag.name.as_ref() {
-                        "ul" => self.found_links.set(false),
-                        _ => {}
-                    },
+                    (false, false, true) => {
+                        if tag.name.as_ref() == "ul" {
+                            self.found_links.set(false);
+                        }
+                    }
                     (_, _, _) => {}
                 },
             },
@@ -168,14 +170,14 @@ fn main() {
     book.set_title(title.clone());
     let links = info.links.into_inner();
 
-    for i in 0..links.len() {
+    for (i, item) in links.iter().enumerate() {
         log::info!("{}", &links[i]);
-        let content = process_chapter(&agent, &links[i]).expect("process_chapter failed");
+        let content = process_chapter(&agent, item).expect("process_chapter failed");
         let title = content.title.into_inner();
 
         book.add_content(
             EpubContent::new(
-                format!("{}.xhtml", i),
+                format!("{i}.xhtml"),
                 Cursor::new(format!(
                     r#"<?xml version="1.0" encoding="UTF-8"?>
         <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
@@ -188,7 +190,7 @@ fn main() {
             )
             .title(title.clone())
             .reftype(ReferenceType::Text)
-            .child(TocElement::new(format!("{}.xhtml#1", i), title)),
+            .child(TocElement::new(format!("{i}.xhtml#1"), title)),
         )
         .expect("create chapter failed");
 
@@ -197,7 +199,7 @@ fn main() {
 
     book.inline_toc();
 
-    let mut output_file = File::create(format!("{}.epub", title)).expect("create epub file failed");
+    let mut output_file = File::create(format!("{title}.epub")).expect("create epub file failed");
     book.generate(&mut output_file)
         .expect("epub generate failed");
 }
@@ -212,11 +214,11 @@ fn process_info(agent: &Agent, path: &str) -> Result<LinksSink> {
     input.push_back(
         chunk
             .try_reinterpret()
-            .map_err(|e| anyhow::Error::msg(format!("try_reinterpret failed on:{:?}", e)))?,
+            .map_err(|e| anyhow::Error::msg(format!("try_reinterpret failed on:{e:?}")))?,
     );
 
     let sinker = LinksSink::default();
-    let tok = Tokenizer::new(sinker, Default::default());
+    let tok = Tokenizer::new(sinker, TokenizerOpts::default());
     let _ = tok.feed(&input);
     tok.end();
 
@@ -233,11 +235,11 @@ fn process_chapter(agent: &Agent, path: &str) -> Result<ChapterSink> {
     input.push_back(
         chunk
             .try_reinterpret()
-            .map_err(|e| anyhow::Error::msg(format!("try_reinterpret failed on:{:?}", e)))?,
+            .map_err(|e| anyhow::Error::msg(format!("try_reinterpret failed on:{e:?}")))?,
     );
 
     let sinker = ChapterSink::default();
-    let tok = Tokenizer::new(sinker, Default::default());
+    let tok = Tokenizer::new(sinker, TokenizerOpts::default());
     let _ = tok.feed(&input);
     tok.end();
 
