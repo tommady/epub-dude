@@ -3,7 +3,7 @@ name = "epub-dude"
 version = "0.1.0"
 authors = ["tommady <tommady@users.noreply.github.com>"]
 readme = "README.md"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 simple_logger = "5.0"
