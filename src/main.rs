@@ -1,4 +1,3 @@
-use core::time;
 use std::{
     cell::{Cell, RefCell},
     env,
@@ -8,6 +7,7 @@ use std::{
 };
 
 use anyhow::Result;
+use core::time;
 use epub_builder::{EpubBuilder, EpubContent, EpubVersion, ReferenceType, TocElement, ZipCommand};
 use html5ever::{
     tendril::{ByteTendril, ReadExt},
@@ -15,6 +15,7 @@ use html5ever::{
         BufferQueue, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
     },
 };
+use indicatif::{ProgressBar, ProgressStyle};
 use ureq::{Agent, BodyReader};
 
 trait SinkType: Default {}
@@ -156,28 +157,48 @@ impl TokenSink for LinksSink {
 }
 
 fn main() {
-    simple_logger::init_with_level(log::Level::Info).expect("simple logger init failed");
-
     let args: Vec<String> = env::args().collect();
     let agent = Agent::new_with_defaults();
-    let mut book = EpubBuilder::new(ZipCommand::new().expect("new zip command failed"))
-        .expect("new epub builder failed");
+
+    for url in args.iter().skip(1) {
+        if let Err(e) = process_book(url, &agent) {
+            eprintln!("Failed to process {url}: {e}");
+        }
+    }
+}
+
+fn process_book(url: &str, agent: &Agent) -> Result<()> {
+    let mut book = EpubBuilder::new(ZipCommand::new()?)?;
 
     book.epub_version(EpubVersion::V30);
 
-    let info: LinksSink = process::<LinksSink>(&agent, &args[1]).expect("process_info failed");
+    let info: LinksSink = process::<LinksSink>(agent, url)?;
 
     book.add_author(info.author.into_inner());
     let title = info.title.into_inner();
     book.set_title(title.clone());
     let links = info.links.into_inner();
 
-    for (i, item) in links.iter().enumerate() {
-        log::info!("{item}");
+    let bar = ProgressBar::new(links.len() as u64);
+    bar.set_style(
+        ProgressStyle::default_bar()
+            .template(
+                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}",
+            )?
+            .progress_chars("#>-"),
+    );
+    bar.set_message(format!("Processing {}", title));
 
-        let content: ChapterSink =
-            process::<ChapterSink>(&agent, item).expect("process_chapter failed");
-        let title = content.title.into_inner();
+    for (i, item) in links.iter().enumerate() {
+        let content_result = process::<ChapterSink>(agent, item);
+
+        if let Err(e) = content_result {
+            bar.abandon_with_message(format!("Failed to process chapter: {}", e));
+            return Err(e);
+        }
+
+        let content = content_result?;
+        let chapter_title = content.title.into_inner();
 
         book.add_content(
             EpubContent::new(
@@ -192,18 +213,20 @@ fn main() {
                     content.text.into_inner()
                 )),
             )
-            .title(title.clone())
+            .title(chapter_title.clone())
             .reftype(ReferenceType::Text)
-            .child(TocElement::new(format!("{i}.xhtml#1"), title)),
-        )
-        .expect("create chapter failed");
+            .child(TocElement::new(format!("{i}.xhtml#1"), chapter_title)),
+        )?;
+        bar.inc(1);
     }
 
+    bar.finish_with_message("Done");
     book.inline_toc();
 
-    let mut output_file = File::create(format!("{title}.epub")).expect("create epub file failed");
-    book.generate(&mut output_file)
-        .expect("epub generate failed");
+    let mut output_file = File::create(format!("{title}.epub"))?;
+    book.generate(&mut output_file)?;
+
+    Ok(())
 }
 
 fn process<T: SinkType + TokenSink>(agent: &Agent, path: &str) -> Result<T> {
@@ -238,7 +261,6 @@ fn fetch_with_backoff(agent: &Agent, path: &str) -> Result<BodyReader<'static>> 
                 return Ok(resp.into_body().into_reader());
             }
             Err(ureq::Error::StatusCode(429)) => {
-                log::info!("received 429, retrying in {delay:?}");
                 thread::sleep(delay);
                 delay *= 2;
                 retries -= 1;
