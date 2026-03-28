@@ -1,15 +1,15 @@
-use std::{env, fs::File, io::Cursor, thread};
+use std::{env, fs::File, io::Cursor, str::FromStr, thread};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use core::time;
 use epub_builder::{EpubBuilder, EpubContent, EpubVersion, ReferenceType, TocElement, ZipCommand};
 use html5ever::{
     tendril::{ByteTendril, ReadExt},
     tokenizer::{BufferQueue, TokenSink, Tokenizer, TokenizerOpts},
 };
+use http::Uri;
 use indicatif::{ProgressBar, ProgressStyle};
-use ureq::{Agent, BodyReader};
-use url::Url;
+use ureq::{Agent, BodyReader, unversioned::multipart::Form};
 
 mod download;
 
@@ -17,29 +17,63 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let agent = Agent::new_with_defaults();
 
+    // let mut djazz_key = None;
+    // if let Some(pos) = args.iter().position(|a| a == "--djazz-key") {
+    //     if pos + 1 < args.len() {
+    //         djazz_key = Some(args.remove(pos + 1));
+    //         args.remove(pos); // remove the "--djazz-key" flag itself
+    //         send_to_djazz(&agent, &epub_filename, djazz_key).expect("gglong");
+    //     } else {
+    //         eprintln!("Error: --djazz-key requires a 4-character argument");
+    //         std::process::exit(1);
+    //     }
+    // }
+
     for u in args.iter().skip(1) {
-        let url = Url::parse(u).expect("Failed to parse {u}, {e}");
+        let url = Uri::from_str(u).expect("Parse Uri failed");
+        // let url = Url::parse(u).expect("Failed to parse {u}, {e}");
         if let Err(e) = process_book(&url, &agent) {
             eprintln!("Failed to process {url}: {e}");
         }
     }
 }
 
-fn process_book(url: &Url, agent: &Agent) -> Result<()> {
-    match url.domain() {
+fn send_to_djazz(agent: &Agent, epub_path: &str, key: &str) -> Result<()> {
+    println!("Sending {} to Djazz (key: {})...", epub_path, key);
+
+    let form = Form::new()
+        .text("key", key)
+        .text("kepubify", "on") // Kobo conversion (default checked)
+        .text("kindlegen", "on") // Kindle conversion (default checked)
+        .file("file", epub_path)
+        .context("Failed to attach file to multipart form")?;
+    let response = agent.post("https://send.djazz.se/upload").send(form)?;
+    let status = response.status();
+
+    if status == 200 {
+        println!("Successfully sent to Djazz");
+    } else {
+        eprintln!("Failed to send to Djazz (Status {status})");
+    }
+
+    Ok(())
+}
+
+fn process_book(uri: &Uri, agent: &Agent) -> Result<()> {
+    match uri.host() {
         Some("czbooks.net") => {
-            process_book_with_provider::<download::czbooksnet::CzBooksProvider>(url.as_str(), agent)
+            process_book_with_provider::<download::czbooksnet::CzBooksProvider>(uri, agent)
         }
-        _ => anyhow::bail!("Unsupported domain: {url}"),
+        _ => anyhow::bail!("Unsupported domain: {uri}"),
     }
 }
 
-fn process_book_with_provider<P: download::Provider>(url: &str, agent: &Agent) -> Result<()> {
+fn process_book_with_provider<P: download::Provider>(uri: &Uri, agent: &Agent) -> Result<()> {
     let mut book = EpubBuilder::new(ZipCommand::new()?)?;
 
     book.epub_version(EpubVersion::V33);
 
-    let info: download::BookInfo = process::<P::Link>(agent, url)?.into();
+    let info: download::BookInfo = process::<P::Link>(agent, uri)?.into();
 
     book.add_author(info.author);
     let title = info.title;
@@ -97,7 +131,7 @@ fn process_book_with_provider<P: download::Provider>(url: &str, agent: &Agent) -
     Ok(())
 }
 
-fn process<T: Default + TokenSink<Handle = ()>>(agent: &Agent, path: &str) -> Result<T> {
+fn process<T: Default + TokenSink<Handle = ()>>(agent: &Agent, path: &Uri) -> Result<T> {
     let mut resp = fetch_with_backoff(agent, path)?;
     let mut chunk = ByteTendril::new();
 
@@ -118,7 +152,7 @@ fn process<T: Default + TokenSink<Handle = ()>>(agent: &Agent, path: &str) -> Re
     Ok(tok.sink)
 }
 
-fn fetch_with_backoff(agent: &Agent, path: &str) -> Result<BodyReader<'static>> {
+fn fetch_with_backoff(agent: &Agent, path: &Uri) -> Result<BodyReader<'static>> {
     let mut retries = 3;
     let mut delay = time::Duration::from_millis(3000);
 

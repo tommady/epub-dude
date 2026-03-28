@@ -1,4 +1,5 @@
 use html5ever::tokenizer::TokenSink;
+use http::Uri;
 
 pub mod czbooksnet;
 
@@ -10,7 +11,7 @@ pub trait Provider {
 pub struct BookInfo {
     pub author: String,
     pub title: String,
-    pub links: Vec<String>,
+    pub links: Vec<Uri>,
 }
 
 pub struct ChapterInfo {

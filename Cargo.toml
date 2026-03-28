@@ -7,12 +7,12 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1"
-ureq = "3"
+ureq = { version = "3", features = ["multipart"] }
 html5ever = "0.39"
 epub-builder = "0.8"
 indicatif = "0.18"
-clap = { version = "4", features = ["derive"] }
-url = "2"
+http = "1"
+getopts = "0.2.24"
 
 [profile.release]
 opt-level = 's'

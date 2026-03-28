@@ -1,6 +1,11 @@
 use super::{BookInfo, ChapterInfo, Provider};
+
 use html5ever::tokenizer::{TagKind, Token, TokenSink, TokenSinkResult};
-use std::cell::{Cell, RefCell};
+use http::Uri;
+use std::{
+    cell::{Cell, RefCell},
+    str::FromStr,
+};
 
 pub struct CzBooksProvider;
 
@@ -28,7 +33,7 @@ impl From<ChapterSink> for ChapterInfo {
 
 #[derive(Default)]
 pub struct LinksSink {
-    links: RefCell<Vec<String>>,
+    links: RefCell<Vec<Uri>>,
     author: Cell<String>,
     title: Cell<String>,
     found_author_tag: Cell<bool>,
@@ -108,9 +113,10 @@ impl TokenSink for LinksSink {
                         (false, true) => {
                             for attr in &tag.attrs {
                                 if attr.name.local.as_ref() == "href" {
+                                    let uri = format!("https:{}", attr.value.as_ref());
                                     self.links
                                         .borrow_mut()
-                                        .push(format!("https:{}", attr.value.as_ref()));
+                                        .push(Uri::from_str(&uri).expect("Parse LinksSink failed"));
                                 }
                             }
                         }
