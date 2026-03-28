@@ -6,11 +6,12 @@ readme = "README.md"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0"
-ureq = "3.0"
-html5ever = "0.30"
+anyhow = "1"
+ureq = "3"
+html5ever = "0.39"
 epub-builder = "0.8"
 indicatif = "0.18"
+clap = { version = "4", features = ["derive"] }
 
 [profile.release]
 opt-level = 's'

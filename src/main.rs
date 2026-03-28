@@ -1,160 +1,16 @@
-use std::{
-    cell::{Cell, RefCell},
-    env,
-    fs::File,
-    io::Cursor,
-    thread,
-};
+use std::{env, fs::File, io::Cursor, thread};
 
 use anyhow::Result;
 use core::time;
 use epub_builder::{EpubBuilder, EpubContent, EpubVersion, ReferenceType, TocElement, ZipCommand};
 use html5ever::{
     tendril::{ByteTendril, ReadExt},
-    tokenizer::{
-        BufferQueue, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
-    },
+    tokenizer::{BufferQueue, TokenSink, Tokenizer, TokenizerOpts},
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use ureq::{Agent, BodyReader};
 
-trait SinkType: Default {}
-impl SinkType for LinksSink {}
-impl SinkType for ChapterSink {}
-
-#[derive(Default)]
-struct ChapterSink {
-    found_name: Cell<bool>,
-    found_content: Cell<bool>,
-    title: RefCell<String>,
-    text: RefCell<String>,
-}
-
-impl TokenSink for ChapterSink {
-    type Handle = ();
-
-    fn process_token(&self, token: Token, _line_number: u64) -> TokenSinkResult<()> {
-        match token {
-            Token::TagToken(tag) => match tag.kind {
-                TagKind::StartTag => {
-                    for attr in &tag.attrs {
-                        match (attr.name.local.as_ref(), attr.value.as_ref()) {
-                            ("class", "name") => self.found_name.set(true),
-                            ("class", "content") => self.found_content.set(true),
-                            (_, _) => {}
-                        }
-                    }
-                }
-                TagKind::EndTag => match (self.found_name.get(), self.found_content.get()) {
-                    (true, false) => self.found_name.set(false),
-                    (false, true) => self.found_content.set(false),
-                    (_, _) => {}
-                },
-            },
-            Token::CharacterTokens(text) => {
-                match (self.found_name.get(), self.found_content.get()) {
-                    (true, false) => self.title.borrow_mut().push_str(text.as_ref()),
-                    (false, true) => {
-                        if text.is_empty() {
-                            return TokenSinkResult::Continue;
-                        }
-                        let trimmed = text.replace('\n', "<br />").replace("\u{2003}", "");
-                        self.text.borrow_mut().push_str(&trimmed.to_string());
-                    }
-                    (_, _) => {}
-                }
-            }
-            _ => {}
-        }
-        TokenSinkResult::Continue
-    }
-}
-
-#[derive(Default)]
-struct LinksSink {
-    links: RefCell<Vec<String>>,
-    author: Cell<String>,
-    title: Cell<String>,
-    found_author_tag: Cell<bool>,
-    found_author: Cell<bool>,
-    found_title: Cell<bool>,
-    found_links: Cell<bool>,
-}
-
-impl TokenSink for LinksSink {
-    type Handle = ();
-
-    fn process_token(&self, token: Token, _line_number: u64) -> TokenSinkResult<()> {
-        match token {
-            Token::TagToken(tag) => match tag.kind {
-                TagKind::StartTag => match tag.name.as_ref() {
-                    "span" => {
-                        for attr in &tag.attrs {
-                            match (attr.name.local.as_ref(), attr.value.as_ref()) {
-                                ("class", "author") => self.found_author_tag.set(true),
-                                ("class", "title") => self.found_title.set(true),
-                                (_, _) => {}
-                            }
-                        }
-                    }
-                    "a" => match (self.found_author_tag.get(), self.found_links.get()) {
-                        (true, false) => self.found_author.set(true),
-                        (false, true) => {
-                            for attr in &tag.attrs {
-                                if attr.name.local.as_ref() == "href" {
-                                    self.links
-                                        .borrow_mut()
-                                        .push(format!("https:{}", attr.value.as_ref()));
-                                }
-                            }
-                        }
-                        (_, _) => {}
-                    },
-                    "ul" => {
-                        for attr in &tag.attrs {
-                            if let ("id", "chapter-list") =
-                                (attr.name.local.as_ref(), attr.value.as_ref())
-                            {
-                                self.found_links.set(true);
-                            }
-                        }
-                    }
-                    _ => {}
-                },
-                TagKind::EndTag => match (
-                    self.found_author.get(),
-                    self.found_title.get(),
-                    self.found_links.get(),
-                ) {
-                    (true, false, false) => {
-                        self.found_author.set(false);
-                        self.found_author_tag.set(false);
-                    }
-                    (false, true, false) => self.found_title.set(false),
-                    (false, false, true) => {
-                        if tag.name.as_ref() == "ul" {
-                            self.found_links.set(false);
-                        }
-                    }
-                    (_, _, _) => {}
-                },
-            },
-            Token::CharacterTokens(text) => {
-                match (self.found_author.get(), self.found_title.get()) {
-                    (true, false) => {
-                        self.author.set(text.to_string());
-                    }
-                    (false, true) => {
-                        self.title.set(text.to_string());
-                    }
-                    (_, _) => {}
-                }
-            }
-            _ => {}
-        }
-        TokenSinkResult::Continue
-    }
-}
+mod download;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -168,16 +24,24 @@ fn main() {
 }
 
 fn process_book(url: &str, agent: &Agent) -> Result<()> {
+    if url.contains("czbooks.net") {
+        process_book_with_provider::<download::czbooksnet::CzBooksProvider>(url, agent)
+    } else {
+        anyhow::bail!("Unsupported domain: {url}");
+    }
+}
+
+fn process_book_with_provider<P: download::Provider>(url: &str, agent: &Agent) -> Result<()> {
     let mut book = EpubBuilder::new(ZipCommand::new()?)?;
 
-    book.epub_version(EpubVersion::V30);
+    book.epub_version(EpubVersion::V33);
 
-    let info: LinksSink = process::<LinksSink>(agent, url)?;
+    let info: download::BookInfo = process::<P::Link>(agent, url)?.into();
 
-    book.add_author(info.author.into_inner());
-    let title = info.title.into_inner();
+    book.add_author(info.author);
+    let title = info.title;
     book.set_title(title.clone());
-    let links = info.links.into_inner();
+    let links = info.links;
 
     let bar = ProgressBar::new(links.len() as u64);
     bar.set_style(
@@ -187,18 +51,19 @@ fn process_book(url: &str, agent: &Agent) -> Result<()> {
             )?
             .progress_chars("#>-"),
     );
-    bar.set_message(format!("Processing {}", title));
+    bar.set_message(format!("Processing {title}"));
 
     for (i, item) in links.iter().enumerate() {
-        let content_result = process::<ChapterSink>(agent, item);
+        let content_result = process::<P::Chapter>(agent, item);
 
         if let Err(e) = content_result {
-            bar.abandon_with_message(format!("Failed to process chapter: {}", e));
+            bar.abandon_with_message(format!("Failed to process chapter: {e}"));
             return Err(e);
         }
 
-        let content = content_result?;
-        let chapter_title = content.title.into_inner();
+        let content_sink = content_result?;
+        let content: download::ChapterInfo = content_sink.into();
+        let chapter_title = content.title;
 
         book.add_content(
             EpubContent::new(
@@ -210,7 +75,7 @@ fn process_book(url: &str, agent: &Agent) -> Result<()> {
         {}
         </body>
         </html>"#,
-                    content.text.into_inner()
+                    content.text
                 )),
             )
             .title(chapter_title.clone())
@@ -229,7 +94,7 @@ fn process_book(url: &str, agent: &Agent) -> Result<()> {
     Ok(())
 }
 
-fn process<T: SinkType + TokenSink>(agent: &Agent, path: &str) -> Result<T> {
+fn process<T: Default + TokenSink<Handle = ()>>(agent: &Agent, path: &str) -> Result<T> {
     let mut resp = fetch_with_backoff(agent, path)?;
     let mut chunk = ByteTendril::new();
 
