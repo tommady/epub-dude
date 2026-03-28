@@ -11,7 +11,7 @@ use http::Uri;
 use indicatif::{ProgressBar, ProgressStyle};
 use ureq::{Agent, BodyReader, unversioned::multipart::Form};
 
-mod download;
+mod fetch;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -142,11 +142,28 @@ fn send_to_djazz(
         .file("file", epub_path)
         .context("Failed to attach file to multipart form")?;
 
-    let mut response = agent.post("https://send.djazz.se/upload").send(form)?;
+    let response_result = agent.post("https://send.djazz.se/upload").send(form);
+
+    let mut response = match response_result {
+        Ok(resp) => resp,
+        Err(e) => {
+            let error_msg = e.to_string();
+            // The djazz server sends a malformed 100-continue response *after* receiving the body.
+            // ureq strictly crashes on this, but the file was actually uploaded.
+            if error_msg.contains("received headers with 100-continue response") {
+                println!(
+                    "Successfully sent to Djazz! (Note: Server returned a malformed HTTP response, but upload is complete)"
+                );
+                return Ok(());
+            }
+            return Err(e).context("Failed to send request to Djazz");
+        }
+    };
+
     let status = response.status();
     let body = response.body_mut().read_to_string()?;
 
-    if status == 200 {
+    if status == http::StatusCode::OK {
         println!("Successfully sent to Djazz: {body}");
     } else {
         eprintln!("Failed to send to Djazz (Status {status}): {body}");
@@ -158,18 +175,18 @@ fn send_to_djazz(
 fn process_book(uri: &Uri, agent: &Agent) -> Result<()> {
     match uri.host() {
         Some("czbooks.net") => {
-            process_book_with_provider::<download::czbooksnet::CzBooksProvider>(uri, agent)
+            process_book_with_provider::<fetch::czbooksnet::CzBooksProvider>(uri, agent)
         }
         _ => anyhow::bail!("Unsupported domain: {uri}"),
     }
 }
 
-fn process_book_with_provider<P: download::Provider>(uri: &Uri, agent: &Agent) -> Result<()> {
+fn process_book_with_provider<P: fetch::Provider>(uri: &Uri, agent: &Agent) -> Result<()> {
     let mut book = EpubBuilder::new(ZipCommand::new()?)?;
 
     book.epub_version(EpubVersion::V33);
 
-    let info: download::BookInfo = process::<P::Link>(agent, uri)?.into();
+    let info: fetch::BookInfo = process::<P::Link>(agent, uri)?.into();
 
     book.add_author(info.author);
     let title = info.title;
@@ -195,7 +212,7 @@ fn process_book_with_provider<P: download::Provider>(uri: &Uri, agent: &Agent) -
         }
 
         let content_sink = content_result?;
-        let content: download::ChapterInfo = content_sink.into();
+        let content: fetch::ChapterInfo = content_sink.into();
         let chapter_title = content.title;
 
         book.add_content(
