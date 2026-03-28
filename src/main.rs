@@ -9,6 +9,7 @@ use html5ever::{
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use ureq::{Agent, BodyReader};
+use url::Url;
 
 mod download;
 
@@ -16,18 +17,20 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let agent = Agent::new_with_defaults();
 
-    for url in args.iter().skip(1) {
-        if let Err(e) = process_book(url, &agent) {
+    for u in args.iter().skip(1) {
+        let url = Url::parse(u).expect("Failed to parse {u}, {e}");
+        if let Err(e) = process_book(&url, &agent) {
             eprintln!("Failed to process {url}: {e}");
         }
     }
 }
 
-fn process_book(url: &str, agent: &Agent) -> Result<()> {
-    if url.contains("czbooks.net") {
-        process_book_with_provider::<download::czbooksnet::CzBooksProvider>(url, agent)
-    } else {
-        anyhow::bail!("Unsupported domain: {url}");
+fn process_book(url: &Url, agent: &Agent) -> Result<()> {
+    match url.domain() {
+        Some("czbooks.net") => {
+            process_book_with_provider::<download::czbooksnet::CzBooksProvider>(url.as_str(), agent)
+        }
+        _ => anyhow::bail!("Unsupported domain: {url}"),
     }
 }
 

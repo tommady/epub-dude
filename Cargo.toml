@@ -12,6 +12,7 @@ html5ever = "0.39"
 epub-builder = "0.8"
 indicatif = "0.18"
 clap = { version = "4", features = ["derive"] }
+url = "2"
 
 [profile.release]
 opt-level = 's'
