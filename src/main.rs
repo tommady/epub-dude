@@ -260,7 +260,7 @@ fn fetch_with_backoff(agent: &Agent, path: &str) -> Result<BodyReader<'static>> 
                 thread::sleep(time::Duration::from_millis(900));
                 return Ok(resp.into_body().into_reader());
             }
-            Err(ureq::Error::StatusCode(429)) => {
+            Err(ureq::Error::StatusCode(code)) if (400..=499).contains(&code) => {
                 thread::sleep(delay);
                 delay *= 2;
                 retries -= 1;
