@@ -17,43 +17,139 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let agent = Agent::new_with_defaults();
 
-    // let mut djazz_key = None;
-    // if let Some(pos) = args.iter().position(|a| a == "--djazz-key") {
-    //     if pos + 1 < args.len() {
-    //         djazz_key = Some(args.remove(pos + 1));
-    //         args.remove(pos); // remove the "--djazz-key" flag itself
-    //         send_to_djazz(&agent, &epub_filename, djazz_key).expect("gglong");
-    //     } else {
-    //         eprintln!("Error: --djazz-key requires a 4-character argument");
-    //         std::process::exit(1);
-    //     }
-    // }
+    if args.len() < 2 {
+        print_usage(&args[0]);
+        return;
+    }
 
-    for u in args.iter().skip(1) {
-        let url = Uri::from_str(u).expect("Parse Uri failed");
-        // let url = Url::parse(u).expect("Failed to parse {u}, {e}");
-        if let Err(e) = process_book(&url, &agent) {
-            eprintln!("Failed to process {url}: {e}");
+    let command = &args[1];
+
+    match command.as_str() {
+        "fetch" => {
+            let mut opts = getopts::Options::new();
+            opts.optflag("h", "help", "print this help menu");
+
+            let matches = match opts.parse(&args[2..]) {
+                Ok(m) => m,
+                Err(f) => {
+                    eprintln!("{f}");
+                    std::process::exit(1);
+                }
+            };
+
+            if matches.opt_present("h") {
+                let brief = format!("Usage: {} fetch [options] <URL>...", args[0]);
+                print!("{}", opts.usage(&brief));
+                return;
+            }
+
+            if matches.free.is_empty() {
+                eprintln!("Error: Missing URL for fetch command");
+                std::process::exit(1);
+            }
+
+            for u in &matches.free {
+                let url = Uri::from_str(u).expect("Parse Uri failed");
+                if let Err(e) = process_book(&url, &agent) {
+                    eprintln!("Failed to process {url}: {e}");
+                }
+            }
+        }
+        "send" => {
+            let mut opts = getopts::Options::new();
+            opts.optflag("h", "help", "print this help menu");
+            opts.optopt("k", "key", "4-character key for send.djazz.se", "KEY");
+            opts.optflag("", "no-kepubify", "disable Kepubify conversion (Kobo only)");
+            opts.optflag(
+                "",
+                "no-kindlegen",
+                "disable KindleGen conversion (Kindle only)",
+            );
+
+            let matches = match opts.parse(&args[2..]) {
+                Ok(m) => m,
+                Err(f) => {
+                    eprintln!("{f}");
+                    std::process::exit(1);
+                }
+            };
+
+            if matches.opt_present("h") {
+                let brief = format!("Usage: {} send [options] <FILE.epub>...", args[0]);
+                print!("{}", opts.usage(&brief));
+                return;
+            }
+
+            let Some(key) = matches.opt_str("k") else {
+                eprintln!("Error: -k/--key is required for the send command");
+                std::process::exit(1);
+            };
+
+            if matches.free.is_empty() {
+                eprintln!("Error: Missing file path for send command");
+                std::process::exit(1);
+            }
+
+            let kepubify = !matches.opt_present("no-kepubify");
+            let kindlegen = !matches.opt_present("no-kindlegen");
+
+            for file in &matches.free {
+                if let Err(e) = send_to_djazz(&agent, file, &key, kepubify, kindlegen) {
+                    eprintln!("Failed to send {file}: {e}");
+                }
+            }
+        }
+        _ => {
+            eprintln!("Unknown command: {command}");
+            print_usage(&args[0]);
+            std::process::exit(1);
         }
     }
 }
 
-fn send_to_djazz(agent: &Agent, epub_path: &str, key: &str) -> Result<()> {
-    println!("Sending {} to Djazz (key: {})...", epub_path, key);
+fn print_usage(program: &str) {
+    println!("Usage: {program} <command> [args]...");
+    println!();
+    println!("Commands:");
+    println!("  fetch <URL>...    Fetch a book from a supported URL and build an epub");
+    println!(
+        "  send [options] <FILE.epub>...  Send an existing epub to a Kobo/Kindle using send.djazz.se"
+    );
+    println!();
+    println!("Run `{program} <command> --help` for more information on a command.");
+}
 
-    let form = Form::new()
-        .text("key", key)
-        .text("kepubify", "on") // Kobo conversion (default checked)
-        .text("kindlegen", "on") // Kindle conversion (default checked)
+fn send_to_djazz(
+    agent: &Agent,
+    epub_path: &str,
+    key: &str,
+    kepubify: bool,
+    kindlegen: bool,
+) -> Result<()> {
+    println!("Sending {epub_path} to Djazz (key: {key})...");
+
+    let mut form = Form::new().text("key", key);
+
+    if kepubify {
+        form = form.text("kepubify", "on"); // Kobo conversion
+    }
+
+    if kindlegen {
+        form = form.text("kindlegen", "on"); // Kindle conversion
+    }
+
+    let form = form
         .file("file", epub_path)
         .context("Failed to attach file to multipart form")?;
-    let response = agent.post("https://send.djazz.se/upload").send(form)?;
+
+    let mut response = agent.post("https://send.djazz.se/upload").send(form)?;
     let status = response.status();
+    let body = response.body_mut().read_to_string()?;
 
     if status == 200 {
-        println!("Successfully sent to Djazz");
+        println!("Successfully sent to Djazz: {body}");
     } else {
-        eprintln!("Failed to send to Djazz (Status {status})");
+        eprintln!("Failed to send to Djazz (Status {status}): {body}");
     }
 
     Ok(())
