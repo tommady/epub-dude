@@ -99,7 +99,7 @@ impl TokenSink for LinksSink {
         match token {
             Token::TagToken(tag) => match tag.kind {
                 TagKind::StartTag => match tag.name.as_ref() {
-                    "span" => {
+                    "span" | "h1" => {
                         for attr in &tag.attrs {
                             match (attr.name.local.as_ref(), attr.value.as_ref()) {
                                 ("class", "author") => self.found_author_tag.set(true),
